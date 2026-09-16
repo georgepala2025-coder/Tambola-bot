@@ -2,3 +2,5 @@ fastapi
 uvicorn[standard]
 playwright
 beautifulsoup4
+pillow
+pytesseract
