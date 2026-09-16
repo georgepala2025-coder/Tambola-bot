@@ -1,0 +1,6 @@
+services:
+  - type: web
+    name: tambola-bot
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /

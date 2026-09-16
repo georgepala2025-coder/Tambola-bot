@@ -1,0 +1,9 @@
+let data=null, selected=null, called=new Set();
+const $=id=>document.getElementById(id);
+async function scan(){const url=$('url').value.trim();if(!url)return; $('status').textContent='Detecting game and scanning public tickets…';
+try{const r=await fetch('/api/scan?url='+encodeURIComponent(url));data=await r.json();if(!r.ok)throw Error(data.detail||'Scan failed');render(data);}catch(e){$('status').textContent=e.message}}
+function render(d){$('status').textContent=`Detected: ${d.site} • ${d.tickets.length} ticket(s) found`;let h='<div class="card"><h2>Pre-game selection</h2><small>The selector uses measurable ticket structure; it cannot know future winning numbers.</small>';
+d.tickets.forEach((t,i)=>{h+=`<div class="ticket ${i===d.selected_index?'best':''}"><b>Ticket ${i+1}</b> <small>score ${t.score}</small><div class="grid">${t.flat.map(n=>`<div class="cell">${n||''}</div>`).join('')}</div>${i===d.selected_index?'<p>⭐ Selected automatically</p>':''}</div>`});
+h+='</div>'; $('result').innerHTML=h; selected=d.tickets[d.selected_index]; $('tracker').classList.remove('hidden');$('ticketName').textContent='Selected ticket is locked for tracking.';draw();poll();}
+function draw(){if(!selected)return;$('grid').innerHTML='<div class="grid">'+selected.flat.map(n=>`<div class="cell ${called.has(n)?'called':''}">${n||''}</div>`).join('')+'</div>';let hit=selected.flat.filter(n=>called.has(n)).length;$('progress').textContent=`${hit}/15 ticket numbers called`;$('called').innerHTML=[...called].sort((a,b)=>a-b).map(n=>`<span class="pill">${n}</span>`).join('');if(hit===15)$('progress').textContent+=' • FULL HOUSE reached';}
+async function poll(){if(!data||!selected)return;try{const r=await fetch('/api/called?url='+encodeURIComponent(data.url));if(r.ok){const d=await r.json();(d.called||[]).forEach(n=>called.add(Number(n)));draw();}}catch{}setTimeout(poll,3000)}
