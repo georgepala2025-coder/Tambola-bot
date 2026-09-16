@@ -4,6 +4,7 @@ from bs4 import BeautifulSoup
 from playwright.async_api import async_playwright
 from PIL import Image, ImageOps, ImageEnhance, ImageFilter
 import pytesseract
+import numpy as np
 import io, os, re, urllib.parse
 
 app = FastAPI()
@@ -80,7 +81,6 @@ def ocr_values(im, psm):
     return words
 
 def build_ocr_tickets(words):
-    # Group OCR words into visual rows, then look for 3 adjacent rows forming a 15-number ticket.
     if not words:return []
     words.sort(key=lambda z:(z[0],z[1]))
     lines=[]
@@ -110,14 +110,90 @@ def build_ocr_tickets(words):
                 seen.add(key);found.append({'flat':vals,'score':ticket_score(vals),'source':'ocr'})
     return found
 
+def cell_ocr(cell):
+    """Read one grid cell. Multiple threshold passes handle thin digits such as 1 and 51."""
+    candidates=[]
+    gray=ImageOps.grayscale(cell)
+    gray=gray.resize((max(30,gray.width*4),max(30,gray.height*4)))
+    for th in (None,160,190,200,210,220):
+        im=gray if th is None else gray.point(lambda p: 0 if p < th else 255)
+        for psm in (7,10):
+            try:
+                txt=pytesseract.image_to_string(im,config=f'--psm {psm} -c tessedit_char_whitelist=0123456789').strip()
+            except Exception:
+                continue
+            vals=nums(txt)
+            for n in vals:
+                if 1 <= n <= 90: candidates.append(n)
+    if not candidates:return None
+    # Prefer a two-digit reading when OCR produced one; otherwise use the most frequent value.
+    two=[n for n in candidates if n>=10]
+    if two:return max(set(two),key=two.count)
+    return max(set(candidates),key=candidates.count)
+
+def parse_green_grid(image_bytes):
+    """Lum Ni War: detect its bright-green ticket borders, split each 3x9 grid, OCR cells independently."""
+    try: base=Image.open(io.BytesIO(image_bytes)).convert('RGB')
+    except Exception:return []
+    try:
+        a=np.asarray(base)
+        r,g,b=a[:,:,0],a[:,:,1],a[:,:,2]
+        green=(g>130)&(g>r*1.35)&(g>b*1.05)
+        row_counts=green.sum(axis=1)
+        # Ticket top/bottom borders are long horizontal green lines.
+        row_idx=np.where(row_counts > base.width*0.30)[0]
+        groups=[]
+        if len(row_idx):
+            s=p=int(row_idx[0])
+            for y in row_idx[1:]:
+                y=int(y)
+                if y>p+1:
+                    groups.append((s,p)); s=y
+                p=y
+            groups.append((s,p))
+        out=[]
+        for i in range(len(groups)-1):
+            top=groups[i]; bottom=groups[i+1]
+            height=bottom[1]-top[0]
+            if height<170 or height>500: continue
+            # Find the two vertical green borders for this ticket.
+            region=green[top[0]:bottom[1]+1,:]
+            col_counts=region.sum(axis=0)
+            col_idx=np.where(col_counts > region.shape[0]*0.55)[0]
+            if len(col_idx)<2: continue
+            x0=int(col_idx[0]); x1=int(col_idx[-1])
+            if x1-x0<250: continue
+            y0=top[1]+5; y1=bottom[0]-5
+            ix0=x0+6; ix1=x1-6; iy0=y0+3; iy1=y1-3
+            grid=[]
+            for rr in range(3):
+                row=[]
+                for cc in range(9):
+                    xa=ix0+(ix1-ix0)*cc//9+3
+                    xb=ix0+(ix1-ix0)*(cc+1)//9-3
+                    ya=iy0+(iy1-iy0)*rr//3+3
+                    yb=iy0+(iy1-iy0)*(rr+1)//3-3
+                    row.append(cell_ocr(base.crop((xa,ya,xb,yb))))
+                grid.append(row)
+            flat=[n for row in grid for n in row if n is not None]
+            if len(flat)==15 and len(set(flat))==15:
+                out.append({'flat':flat,'grid':grid,'score':ticket_score(flat),'source':'green-grid-ocr'})
+        # Deduplicate tickets created by overlapping border detections.
+        unique=[]; seen=set()
+        for t in out:
+            key=tuple(t['flat'])
+            if key not in seen:
+                seen.add(key); unique.append(t)
+        return unique
+    except Exception:
+        return []
+
 def parse_ocr(image_bytes):
     try: base=Image.open(io.BytesIO(image_bytes)).convert('RGB')
     except Exception:return []
-    all_found=[]
-    # Multiple OCR layouts are important because ticket cards can be compact or spread out.
+    all_found=parse_green_grid(image_bytes)
     for psm in (6,11,12):
         all_found.extend(build_ocr_tickets(ocr_values(base,psm)))
-    # Also OCR horizontal strips; this avoids unrelated page text merging into a ticket.
     if base.height>0:
         step=max(500,base.height//12)
         for top in range(0,base.height,step):
@@ -147,7 +223,6 @@ async def load(url):
                 except Exception: pass
             if host(url)=='lumniwar.com':
                 await page.wait_for_timeout(3000)
-                # Trigger lazy-loaded ticket content by scrolling through the page.
                 await page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
                 await page.wait_for_timeout(1500)
                 await page.evaluate('window.scrollTo(0, 0)')
@@ -167,7 +242,6 @@ async def scan(url:str=Query(...)):
     soup=BeautifulSoup(html,'html.parser')
     tickets=parse_dom(soup)
     ocr=parse_ocr(shot)
-    # Prefer actual DOM tickets, but include OCR tickets too when the site renders cards as images/canvas.
     combined=tickets+ocr
     unique=[];seen=set()
     for t in combined:
