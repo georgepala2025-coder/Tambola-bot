@@ -4,3 +4,4 @@ playwright
 beautifulsoup4
 pillow
 pytesseract
+numpy
