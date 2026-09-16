@@ -9,7 +9,7 @@ RUN pip install --no-cache-dir -r requirements.txt \
     && playwright install --with-deps chromium
 
 COPY main.py .
-COPY frontend ./frontend
+COPY index.html app.js style.css manifest.json ./
 
 EXPOSE 8000
 
