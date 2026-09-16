@@ -5,7 +5,7 @@ from playwright.async_api import async_playwright
 import os,re,urllib.parse
 
 app=FastAPI()
-BASE=os.path.join(os.path.dirname(__file__),'..','frontend')
+BASE=os.path.dirname(__file__)
 
 SITES={
  'shillonghousiewin.com':'Shillong Housie Win',
